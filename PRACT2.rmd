@@ -1,0 +1,559 @@
+---
+title: "PRACT2-VD"
+author: "Guillermo Astorga Manzanal"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r, include=FALSE}
+library(readxl)
+library(dplyr)
+library(kableExtra)
+library(ggplot2)
+library(plotly)
+library(stringr)
+library(maps)
+library(scales)
+```
+
+
+# Data Load
+```{r, echo=TRUE}
+salary_data <- read.csv("./data/Dataset salary 2024.csv", stringsAsFactors = FALSE)
+population_data <- read.csv("./data/World Population by country 2024.csv", stringsAsFactors = FALSE)
+country_mapping <- read.csv("./data/country_mapping.csv", stringsAsFactors = FALSE)
+```
+
+# Preprocessing
+
+```{r}
+population_data <- population_data %>%
+  rename(
+    Population_2024 = Population.2024,
+    Population_2023 = Population.2023,
+    Area_km2        = Area..km2.,
+    Density_km2     = Density...km2.,
+    Growth_Rate     = Growth.Rate,
+    World_Percent   = World..,
+    World_Rank      = World.Rank
+  )
+```
+
+
+Limpiamos la variable Area (km2) para convertir aquellos valores como "3M" a 3000000 y "770.9K" a 770900
+
+```{r}
+
+pop_clean <- population_data
+pop_clean$Area_km2 <- gsub("M", "000000", pop_clean$Area_km2)
+pop_clean$Area_km2 <- gsub("K", "000", pop_clean$Area_km2)
+pop_clean$Area_km2 <- as.numeric(pop_clean$Area_km2)
+
+pop_clean <- population_data %>%
+  mutate(
+    across(c(Population_2024, Population_2023, Density_km2, Growth_Rate, World_Percent), as.numeric)
+  )
+
+summary(pop_clean)
+```
+
+```{r}
+salary_clean <- salary_data %>%
+  mutate(
+    experience_level = factor(experience_level, levels = c("EN", "MI", "SE", "EX")),
+    employment_type = as.factor(employment_type),
+    job_title = as.factor(job_title),
+    company_size = factor(company_size, levels = c("S", "M", "L")),
+    remote_ratio = as.factor(remote_ratio)
+  ) %>%
+  mutate(work_year = as.factor(work_year))
+```
+
+```{r}
+df_combined <- salary_clean %>%
+  left_join(country_mapping, by = c("employee_residence" = "Country_Code")) %>%
+  left_join(pop_clean, by = c("Country_Name" = "Country"))
+```
+
+```{r}
+head(df_combined)
+```
+
+```{r}
+
+```
+
+
+
+```{r}
+print(colSums(is.na(df_combined)))
+```
+```{r}
+write.csv(df_combined, "./output/Dataset_Final_Procesado.csv", row.names = FALSE)
+```
+
+
+# Exploración
+
+
+## ¿Cómo se relaciona la población de un país con los niveles salariales promedio o totales?
+
+Exploramos la correlación
+```{r}
+cor_val <- cor ( df_combined$salary_in_usd, df_combined$Population_2024, use = "complete.obs") 
+print(paste("Correlación:", cor_val))
+```
+
+Vemos que es una relación bastante débil.
+
+Vamos a explorar la correlación haciendo un promedio por país, de esta forma evitando que el volumen de entradas de un país desvíe la media.
+
+
+```{r}
+country_summary <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Avg_Salary = mean(salary_in_usd, na.rm = TRUE),
+    Population = first(Population_2024)
+  )
+
+ggplot(country_summary, aes(x = Population, y = Avg_Salary)) +
+  geom_point() +
+  scale_x_log10() +
+  geom_smooth(method = "lm") +
+  labs(title = "Población vs Salario Promedio",
+       x = "Población (Escala Log)",
+       y = "Salario Promedio (USD)")
+
+cor_val <- cor ( country_summary$Avg_Salary, country_summary$Population, use = "complete.obs") 
+print(paste("Correlación:", cor_val))
+```
+
+En este caso la correlación es incluso menor, por lo que podemos asgurar que no existe una correlación clara de que, a mayor población los salarios sean también mayores.
+
+## ¿Qué países tienen un porcentaje de teletrabajo mayor?
+
+```{r}
+world_map <- map_data("world")
+```
+
+
+```{r}
+country_data <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Avg_Remote = mean(as.numeric(as.character(remote_ratio)), na.rm = TRUE)
+  ) %>%
+  mutate(Country_Name = case_when(
+    Country_Name == "United States" ~ "USA",
+    Country_Name == "United Kingdom" ~ "UK",
+    TRUE ~ Country_Name
+  ))
+```
+
+```{r}
+
+country_remote_summary <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Avg_Remote_Ratio = mean(as.numeric(as.character(remote_ratio)), na.rm = TRUE),
+    Total_Records = n()
+  ) %>%
+  filter(Total_Records >= 5) %>% 
+  arrange(desc(Avg_Remote_Ratio))
+head(country_remote_summary, 10)
+```
+
+```{r}
+map_data_joined <- left_join(world_map, country_data, by = c("region" = "Country_Name"))
+
+w_t_p <- ggplot(map_data_joined, aes(x = long, y = lat, group = group, fill = Avg_Remote)) +
+  geom_polygon(colour = "white", size = 0.01) +
+  coord_fixed(1.3) +
+  scale_fill_stepsn(
+    colors = c("#f7fbff","#b5d1ae", "#568b87", "#326b77",  "#122740"),
+    breaks = c(0, 25, 50, 75, 100),
+    na.value = "grey90",
+    name = "% Teletrabajo"
+  ) +
+  labs(
+    title = "Porcentaje de Teletrabajo por País",
+    subtitle = "Promedio por país",
+    caption = "Gris indica falta de datos"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    panel.background = element_rect(fill = "transparent", color = NA),
+    plot.background = element_rect(fill = "transparent", color = NA),
+    legend.background = element_rect(fill = "transparent", color = NA),
+    legend.key = element_rect(fill = "transparent", color = NA)
+  )
+
+w_t_p
+
+ggsave("./images/mapa_teletrabajo_HD.png", 
+       plot = w_t_p, 
+       width = 12, 
+       height = 7, 
+       dpi = 300, 
+       bg = "transparent")
+```
+
+
+
+## ¿Cuál es la distribución de salarios por categoría profesional en cada región o país?
+
+```{r}
+top_countries_salary <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Median_Salary = median(salary_in_usd, na.rm = TRUE),
+    Total_Records = n()
+  ) %>%
+  filter(Total_Records >= 20) %>% 
+  arrange(desc(Median_Salary)) %>%
+  head(10) %>%
+  pull(Country_Name)
+
+df_plot_salary <- df_combined %>%
+  filter(Country_Name %in% top_countries_salary)
+
+s_d_c_e_ <- ggplot(df_plot_salary, aes(x = experience_level, y = salary_in_usd, fill = experience_level)) +
+  geom_boxplot(alpha = 0.7, outlier.colour = "red", outlier.shape = 1) +
+  facet_wrap(~ Country_Name, scales = "free_y", ncol = 5) + 
+  scale_y_continuous(labels = unit_format(unit = "K", scale = 1e-3, prefix = "$")) +
+  scale_fill_viridis_d(option = "plasma", begin = 0.2, end = 0.8) +
+  labs(
+    title = "Distribución Salarial en los Países con Mayores Ingresos",
+    subtitle = "Top 10 países seleccionados por salario promedio (Mínimo 20 registros)",
+    x = "Nivel de Experiencia",
+    y = "Salario Anual (USD)",
+    fill = "Categoría",
+    caption = "Niveles: EN (Entry), MI (Mid), SE (Senior), EX (Executive)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold", color = "black"),
+    panel.spacing = unit(1, "lines")
+  )
+s_d_c_e_
+ggsave("./images/mapa_distribucion_pais_experiencia.png", 
+       plot = s_d_c_e_, 
+       width = 12, 
+       height = 7, 
+       dpi = 300, 
+       bg = "transparent")
+
+```
+
+## ¿Existen países en los que la población crece más rápido que los salarios, indicando posibles tensiones económicas?
+
+```{r}
+salary_growth <- df_combined %>%
+  filter(work_year %in% c(2023, 2024)) %>%
+  group_by(Country_Name, work_year) %>%
+  summarise(
+    Avg_Salary = mean(salary_in_usd, na.rm = TRUE),
+    n = n(),
+    Pop_Growth_Rate = first(Growth_Rate)
+  ) %>%
+  filter(n >= 5) %>%
+  group_by(Country_Name) %>%
+  filter(n() == 2) %>%
+  summarise(
+    Salary_2023 = Avg_Salary[work_year == 2023],
+    Salary_2024 = Avg_Salary[work_year == 2024],
+    Salary_Growth = (Salary_2024 / Salary_2023) - 1,
+    Pop_Growth = first(Pop_Growth_Rate)
+  )
+
+salary_growth <- salary_growth %>%
+  mutate(Tension = ifelse(Pop_Growth > Salary_Growth, "Riesgo de Tensión", "Crecimiento Saludable"))
+
+ggplot(salary_growth, aes(x = reorder(Country_Name, Salary_Growth))) +
+  geom_bar(aes(y = Salary_Growth, fill = Tension), stat = "identity", alpha = 0.7) +
+  geom_point(aes(y = Pop_Growth), color = "red", size = 3, shape = 18) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("Crecimiento Saludable" = "#2ecc71", "Riesgo de Tensión" = "#e74c3c")) +
+  coord_flip() +
+  labs(
+    title = "Crecimiento Salarial vs. Crecimiento Poblacional",
+    subtitle = "(2023-2024) - Barras (salarios), Diamantes (Población)",
+    x = "País",
+    y = "Tasa de Crecimiento",
+    fill = "Estado Económico",
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+
+## ¿Cómo varían los niveles de experiencia por país? Que diferencia existe entre los niveles salariales respecto al salario por país?
+
+```{r}
+top_countries_list <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(n = n()) %>%
+  filter(n >= 20 & !is.na(Country_Name)) %>%
+  pull(Country_Name)
+
+df_exp_dist <- df_combined %>%
+  filter(Country_Name %in% top_countries_list) %>%
+  group_by(Country_Name, experience_level) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = count / sum(count))
+
+sorted_countries <- df_exp_dist %>%
+  filter(experience_level == "SE") %>%
+  arrange(percentage) %>%
+  pull(Country_Name)
+
+df_exp_dist$Country_Name <- factor(df_exp_dist$Country_Name, levels = sorted_countries)
+
+ggplot(df_exp_dist, aes(x = Country_Name, y = percentage, fill = experience_level)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_viridis_d(name = "Nivel de Experiencia") +
+  coord_flip() +
+  labs(
+    title = "Distribución de Niveles de Experiencia por País",
+    subtitle = "Países ordenados por su proporción de perfiles Senior",
+    x = "País",
+    y = "Porcentaje"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+teal_exp <- c("EN" = "#b5d1ae", "MI" = "#568b87", "SE" = "#1b485e", "EX" = "#122740")
+
+country_stats <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Median_Salary = median(salary_in_usd, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n >= 20 & !is.na(Country_Name)) %>%
+  arrange(Median_Salary)
+
+df_exp_salary_sorted <- df_combined %>%
+  filter(Country_Name %in% country_stats$Country_Name) %>%
+  mutate(
+    experience_level = factor(experience_level, levels = c("EN", "MI", "SE", "EX")),
+    Country_Name = factor(Country_Name, levels = country_stats$Country_Name)
+  ) %>%
+  group_by(Country_Name, experience_level) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(Country_Name) %>%
+  mutate(percentage = count / sum(count)) %>%
+  ungroup()
+
+g_exp_salary <- ggplot(df_exp_salary_sorted, aes(x = Country_Name, y = percentage, fill = experience_level)) +
+  geom_bar(stat = "identity", position = "fill", alpha = 0.9, color = "white", size = 0.1) +
+  scale_y_continuous(labels = percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = teal_exp, name = "Nivel de Experiencia",
+                    labels = c("Entry", "Mid", "Senior", "Executive")) +
+  coord_flip() +
+  labs(
+    title = "Distribución de Experiencia vs. Nivel Salarial",
+    subtitle = "Ordenados descendientemente por salario mediano",
+    x = "País",
+    y = "Composición del Mercado (%)"
+  ) +
+  theme_minimal(base_size = 22) + 
+  theme(
+    legend.position = "top",
+    panel.background = element_rect(fill = "transparent", color = NA),
+    plot.background = element_rect(fill = "transparent", color = NA),
+    legend.background = element_rect(fill = "transparent", color = NA),
+    legend.key = element_rect(fill = "transparent", color = NA),
+    axis.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+ggsave(
+  "./images/distribucion_experiencia.png", 
+  plot = g_exp_salary, 
+  width = 25, 
+  height = 12, 
+  dpi = 300, 
+  bg = "transparent"
+)
+
+g_exp_salary
+```
+
+
+```{r}
+country_order <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Median_Global = median(salary_in_usd, na.rm = TRUE),
+    n = n()
+  ) %>%
+  filter(n >= 20 & !is.na(Country_Name)) %>%
+  arrange(desc(Median_Global)) %>%
+  pull(Country_Name)
+
+df_heatmap_v <- df_combined %>%
+  filter(Country_Name %in% country_order) %>%
+  mutate(
+    Country_Name = factor(Country_Name, levels = rev(country_order))
+  ) %>%
+  group_by(Country_Name, experience_level) %>%
+  summarise(Median_Salary = median(salary_in_usd, na.rm = TRUE), .groups = "drop")
+
+h_s_e_v <- ggplot(df_heatmap_v, aes(x = experience_level, y = Country_Name, fill = Median_Salary)) +
+  geom_tile(color = "white", size = 0.6) +
+  geom_text(aes(label = paste0(round(Median_Salary/1000), "K")), 
+            color = ifelse(df_heatmap_v$Median_Salary > 140000, "white", "black"), 
+            size = 3.8, fontface = "bold") +
+  scale_fill_gradientn(
+    colors =  c("#b5d1ae", "#80ae9a", "#568b87", "#326b77", "#1b485e", "#122740"),
+    labels = label_dollar(scale = 1e-3, suffix = "K"),
+    name = "Salario Mediano"
+  ) +
+  labs(
+    title = "Jerarquía Salarial por País y Experiencia",
+    subtitle = "Orientación Vertical: Países con N >= 20 ordenados por ingresos",
+    x = "Nivel de Experiencia",
+    y = "País",
+    caption = "Valores en miles de USD (Mediana)"
+  ) +
+  theme_minimal(base_size = 20) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(face = "bold"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent", color = NA),
+    plot.background = element_rect(fill = "transparent", color = NA),
+    legend.background = element_rect(fill = "transparent", color = NA),
+    legend.key = element_rect(fill = "transparent", color = NA)
+  )
+
+ggsave("./images/mapa_calor_vertical_HD.png", plot = h_s_e_v, width = 10, height = 14, dpi = 300, bg = "transparent")
+
+h_s_e_v
+```
+
+## ¿Cómo influye el tamaño de la empresa en el salario en USD, y existe una diferencia sistemática entre empresas pequeñas, medianas y grandes?
+```{r}
+size_summary <- df_combined %>%
+  group_by(company_size) %>%
+  summarise(
+    Median_Salary = median(salary_in_usd, na.rm = TRUE),
+    Mean_Salary = mean(salary_in_usd, na.rm = TRUE),
+    n = n()
+  )
+
+ggplot(df_combined, aes(x = company_size, y = salary_in_usd, fill = company_size)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.2) +
+  scale_y_continuous(labels = label_dollar(scale = 1e-3, suffix = "K"),
+                     breaks = seq(0, 500000, by = 50000)) +
+  coord_cartesian(ylim = c(0, 350000)) +
+  scale_fill_manual(values = c("S" = "#ff9999", "M" = "#66b3ff", "L" = "#99ff99")) +
+  labs(
+    title = "Distribución Salarial por Tamaño de Empresa",
+    subtitle = "Comparativa global: Pequeñas (S), Medianas (M) y Grandes (L)",
+    x = "Tamaño de Empresa",
+    y = "Salario Anual (USD)",
+    fill = "Tamaño"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+y_limit <- quantile(df_combined$salary_in_usd, 0.95, na.rm = TRUE)
+
+ggplot(df_combined, aes(x = company_size, y = salary_in_usd, fill = company_size)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.5, outlier.alpha = 0.3) +
+  facet_wrap(~ experience_level, ncol = 4) + 
+  scale_y_continuous(labels = label_dollar(scale = 1e-3, suffix = "K"),
+                     breaks = seq(0, 500000, by = 50000)) +
+  coord_cartesian(ylim = c(0, y_limit)) +
+  scale_fill_viridis_d(option = "mako", direction = -1, name = "Nivel de Experiencia")+ 
+
+  labs(
+    title = "Impacto del Tamaño de Empresa en el Salario por Nivel",
+    subtitle = "Comparativa de distribución: Pequeñas (S), Medianas (M) y Grandes (L)",
+    x = "Tamaño de la Empresa",
+    y = "Salario Anual (USD)",
+    caption = "Niveles: EN (Entry), MI (Mid), SE (Senior), EX (Executive)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "gray95"),
+    strip.text = element_text(face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+```
+
+## Pregunta extra: Qué progresion salarial hay para los países con salarios más altos?
+
+```{r}
+
+country_stats <- df_combined %>%
+  group_by(Country_Name) %>%
+  summarise(
+    Median_Salary = median(salary_in_usd, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n >= 20 & !is.na(Country_Name)) %>%
+  arrange(Median_Salary)
+
+df_dumbbell <- df_combined %>%
+  filter(Country_Name %in% country_stats$Country_Name) %>%
+  filter(experience_level %in% c("EN", "SE")) %>%
+  group_by(Country_Name, experience_level) %>%
+  summarise(Median_Salary = median(salary_in_usd, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = experience_level, values_from = Median_Salary) %>%
+  filter(!is.na(EN) & !is.na(SE)) %>%
+  mutate(Gap = SE - EN)
+
+g_dumbbell <- ggplot(df_dumbbell, aes(y = reorder(Country_Name, SE))) +
+  geom_segment(aes(x = EN, xend = SE, y = Country_Name, yend = Country_Name), 
+               color = "#e0e0e0", size = 1.5) +
+  geom_point(aes(x = EN), color = "#b5d1ae", size = 5) +
+  geom_point(aes(x = SE), color = "#1b485e", size = 5) +
+  geom_text(aes(x = SE, label = paste0("+", round(Gap/1000), "K")), 
+            hjust = -0.3, fontface = "bold", size = 4, color = "#1b485e") +
+  scale_x_continuous(labels = label_dollar(scale = 1e-3, suffix = "K"),
+                     expand = expansion(mult = c(0.1, 0.2))) +
+  labs(
+    title = "Potencial de Crecimiento: Entry vs. Senior",
+    subtitle = "Diferencia salarial mediana entre perfiles Junior y Senior",
+    x = "Salario Mediano (USD)",
+    y = NULL,
+  ) +
+  theme_minimal(base_size = 24) +
+  theme(
+    axis.text = element_text(face = "bold"),
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.major.y = element_blank(),
+    panel.background = element_rect(fill = "transparent", color = NA),
+    plot.background = element_rect(fill = "transparent", color = NA)
+  )
+
+g_dumbbell
+
+ggsave("./images/progresion_salarial_top10.png", 
+       plot = g_dumbbell, width = 12, height = 7, dpi = 300, bg = "transparent")
+```
+
+
