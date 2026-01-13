@@ -3,3 +3,6 @@ This repository holds the source code of the analysis performed for the "Prácti
 
 The visualization is:
 ![Visualization 001](https://github.com/user-attachments/assets/b7d8959d-f20a-45d2-acda-430b711c049c)
+
+HD View
+[Visualization.pdf](https://github.com/user-attachments/files/24600595/Visualization.pdf)
